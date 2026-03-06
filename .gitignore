@@ -1,5 +1,9 @@
 .venv/
 .spec-workflow/
+.serena/
 __pycache__/
 *.pyc
 config.json
+*history.jsonl
+*accounts.json
+!*.example.json

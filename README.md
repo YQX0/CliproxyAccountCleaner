@@ -93,6 +93,36 @@ uv run .\CliproxyAccountCleaner.py
 
 首次运行时，`uv` 会根据项目根目录的 `pyproject.toml` 自动创建虚拟环境并安装依赖。
 
+### 方式 C：CLI 交互版（无桌面环境）
+
+适用于服务器、容器、远程终端等没有桌面环境的场景：
+
+```bash
+uv run .\CliproxyAccountCleaner_cli.py
+```
+
+CLI 版特性：
+
+- 启动后通过命令行菜单交互使用
+- 支持手动检测 `401`、额度、完整检测
+- 支持批量删除问题账号、关闭额度耗尽账号
+- 支持自动巡检，并在独立状态界面中持续刷新关键状态信息
+
+自动巡检相关配置可通过 `config.json` 控制：
+
+- `auto_interval_minutes`：自动巡检间隔（分钟）
+- `auto_action_401`：401 账号自动处理方式（如 `删除`）
+- `auto_action_quota`：额度耗尽账号自动处理方式（如 `关闭` / `删除`）
+- `auto_keep_active_count`：活跃账号目标数，`<= 0` 视为不限制
+- `auto_allow_scan_closed`：备用池不足时，是否允许从已关闭账号中补位
+- `standby_output`：备用池名单文件，默认 `standby_accounts.json`
+
+CLI 自动巡检状态界面快捷键：
+
+- `R`：立即执行一次巡检
+- `S`：停止自动巡检
+- `M`：返回主菜单
+
 ## 常见操作流程
 
 1. 点击“刷新”加载账号
