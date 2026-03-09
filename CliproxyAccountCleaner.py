@@ -1141,6 +1141,7 @@ class EnhancedUI(_TK_BASE):
         status_frame.grid(row=1, column=0, sticky="ew")
         status_frame.grid_propagate(False)
         status_frame.columnconfigure(0, weight=1)
+        status_frame.columnconfigure(1, weight=0)
 
         self.status_bar = tk.StringVar(value="准备就绪")
         self.status_label = tk.Label(
@@ -1152,6 +1153,15 @@ class EnhancedUI(_TK_BASE):
             fg="#0f172a",
         )
         self.status_label.grid(row=0, column=0, sticky="ew")
+        self.footer_brand_label = tk.Label(
+            status_frame,
+            text="HsMirageAI小站:ai.hsnb.fun",
+            anchor="e",
+            justify="right",
+            bg="#e2e8f0",
+            fg="#475569",
+        )
+        self.footer_brand_label.grid(row=0, column=1, sticky="e", padx=(8, 0))
         status_frame.bind("<Configure>", self._update_status_wrap)
 
         self.tree.bind("<Double-1>", self.toggle_item)

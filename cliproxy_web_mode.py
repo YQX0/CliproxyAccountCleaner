@@ -1358,7 +1358,7 @@ tbody td{border-bottom:1px solid #f8ddeb;padding:7px 6px;overflow:hidden;text-ov
 <div class="ops"><button class="btn" id="btnSelectAll">全选</button><button class="btn" id="btnSelectNone">取消全选</button><button class="btn" id="btnCheck401">检测401无效</button><button class="btn" id="btnCheckQuota">检测额度</button><button class="btn" id="btnCheckAll">检测（401+额度）</button><button class="btn" id="btnClose">关闭选中账号</button><button class="btn" id="btnRecover">恢复已关闭</button><button class="btn" id="btnAddStandby">加入备用池</button><button class="btn" id="btnRemoveStandby">备用转活跃</button><button class="btn danger" id="btnDelete">永久删除</button></div>
 <div class="note" id="actionLine">就绪</div></div>
 <div class="table-wrap"><div class="scroll"><table><thead><tr><th style="width:42px">#</th><th style="width:310px">账号 / 邮箱</th><th style="width:120px">状态</th><th>额度详情</th><th style="width:290px">错误信息</th></tr></thead><tbody id="rowsBody"></tbody></table></div></div>
-<div class="statusbar"><div id="footLeft">显示 0 / 0 个账号</div><div>CliproxyAccountCleaner Web</div></div></div>
+<div class="statusbar"><div id="footLeft">显示 0 / 0 个账号</div><div>HsMirageAI小站:ai.hsnb.fun</div></div></div>
 <div class="modal-mask" id="helpMask"><div class="modal"><h3>使用说明</h3><pre>1. 填写 base_url 和 token，然后点击“刷新账号列表”。
 2. 双击表格行可勾选/取消；也可以用全选按钮。
 3. 检测类按钮支持 401、额度、联合检测。
