@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import asyncio
 import hmac
@@ -1346,7 +1346,8 @@ def run_web_mode(host, port, no_browser, ns):
             return {"ok": True, "message": f"[备用转活跃] 完成，成功开启 {d.get('enabled', 0)} 个，其中 {d.get('moved_401', 0)} 个检测为401已失效、{d.get('moved_closed', 0)} 个额度耗尽已关闭", "state": state.snapshot(), "data": d}
         if a == "delete":
             d = state.delete(names)
-            return {"ok": True, "message": f"[永久删除账号] 完成，共选中 {d.get('selected', len(names or []))} 个，成功删除 {d.get('success', 0)} 个，失败 {d.get('failed', 0)} 个", "state": state.snapshot(), "data": d}
+            state.refresh()
+            return {"ok": True, "message": f"[永久删除账号] 完成，共选中 {d.get('selected', len(names or []))} 个，成功删除 {d.get('success', 0)} 个，失败 {d.get('failed', 0)} 个（已自动刷新账号列表）", "state": state.snapshot(), "data": d}
         if a == "auto_start":
             d = state.auto_start()
             return {"ok": True, "message": "[自动巡检] 已启动，将立即执行首次巡检" if d.get("started") else "[自动巡检] 已在运行中，无需重复启动", "state": state.snapshot(), "data": d}

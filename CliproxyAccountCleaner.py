@@ -780,7 +780,7 @@ async def delete_names(base_url, token, names, delete_workers, timeout):
                 async with session.delete(url, headers=mgmt_headers(token), timeout=delete_timeout) as resp:
                     text = await resp.text()
                     data = safe_json_text(text)
-                    ok = (200 <= resp.status < 300) or (resp.status == 200 and data.get("status") == "ok")
+                    ok = resp.status == 200 and data.get("status") == "ok"
                     return {"name": name, "deleted": ok, "status": resp.status, "error": None if ok else text[:200]}
         except Exception as e:
             # 请求超时或异常，但 CPA 可能已经完成了删除，回查确认
