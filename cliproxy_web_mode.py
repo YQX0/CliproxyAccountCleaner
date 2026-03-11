@@ -160,7 +160,7 @@ class WebState:
                     ) as resp:
                         text = await resp.text()
                         data = safe_json_text(text)
-                        ok = resp.status == 200 and data.get("status") == "ok"
+                        ok = 200 <= resp.status < 300
                         return {"name": name, "updated": ok, "disabled": bool(disabled), "status": resp.status, "error": None if ok else text[:200]}
             except Exception as e:
                 return {"name": name, "updated": False, "disabled": bool(disabled), "status": None, "error": str(e)}
@@ -1388,7 +1388,9 @@ let CLOSE_PROGRESS_TIMER=null;
 function stopCloseProgressPoll(){if(CLOSE_PROGRESS_TIMER){clearInterval(CLOSE_PROGRESS_TIMER);CLOSE_PROGRESS_TIMER=null}}
 async function pollCloseProgressOnce(){const d=await j("/api/progress");const p=d.progress||{};if((p.op||"")!=="close"){return}const total=Number(p.total||0);const done=Number(p.done||0);const success=Number(p.success||0);const failed=Number(p.failed||0);const pct=total>0?Math.floor((done*100)/total):0;document.getElementById("actionLine").textContent=`关闭进度: ${done}/${total} (${pct}%) 成功=${success} 失败=${failed}`;if(!p.running){stopCloseProgressPoll()}}
 async function startCloseProgressPoll(){stopCloseProgressPoll();await pollCloseProgressOnce();CLOSE_PROGRESS_TIMER=setInterval(async()=>{try{await pollCloseProgressOnce()}catch(e){if(e.code===401){showLogin(e.message)}stopCloseProgressPoll()}},700)}
-async function run(a,needSel=false,ask=""){try{let names=[];if(["check_401","check_quota","check_all"].includes(a)){names=detectNames()}else if(needSel){names=Array.from(SEL);if(!names.length){alert("请先勾选账号");return}}if(ask&&!window.confirm(ask))return;document.getElementById("actionLine").textContent="执行中...";if(a==="close"){await startCloseProgressPoll()}const d=await j("/api/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:a,config:rcfg(),selected_names:names})});if(d.state)sync(d.state);stopCloseProgressPoll();document.getElementById("actionLine").textContent=d.message||"执行完成"}catch(e){stopCloseProgressPoll();if(e.code===401){showLogin(e.message);return}document.getElementById("actionLine").textContent=`失败: ${e.message}`}}
+const ACTION_LABELS={"refresh":"正在刷新账号列表","check_401":"正在执行 401 无效检测","check_quota":"正在执行额度检测","check_all":"正在执行联合检测（401 + 额度）","close":"正在关闭选中账号","recover_closed":"正在恢复已关闭账号","add_standby":"正在将选中账号加入备用池","remove_standby":"正在将备用账号转为活跃","delete":"正在永久删除选中账号","auto_start":"正在启动自动巡检","auto_stop":"正在停止自动巡检"};
+async function run(a,needSel=false,ask=""){const hint=ACTION_LABELS[a]||"执行中";try{let names=[];if(["check_401","check_quota","check_all"].includes(a)){names=detectNames()}else if(needSel){names=Array.from(SEL);if(!names.length){alert("请先勾选账号");return}}if(ask&&!window.confirm(ask))return;const cnt=names.length?` (${names.length} 个账号)`:"";
+document.getElementById("actionLine").textContent=hint+cnt+"，请稍候...";if(a==="close"){await startCloseProgressPoll()}const d=await j("/api/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:a,config:rcfg(),selected_names:names})});if(d.state)sync(d.state);stopCloseProgressPoll();document.getElementById("actionLine").textContent=d.message||(hint.replace("正在","")+" 完成")}catch(e){stopCloseProgressPoll();if(e.code===401){showLogin(e.message);return}document.getElementById("actionLine").textContent=hint.replace("正在","")+" 失败: "+e.message}}
 document.getElementById("keyword").addEventListener("input",draw);document.getElementById("statusFilter").addEventListener("change",draw);
 document.getElementById("rowsBody").addEventListener("change",e=>{const n=e.target&&e.target.dataset&&e.target.dataset.name;if(!n)return;e.target.checked?SEL.add(n):SEL.delete(n);draw()});
 document.getElementById("rowsBody").addEventListener("dblclick",e=>{const tr=e.target.closest("tr[data-name]");if(!tr)return;const n=tr.dataset.name;SEL.has(n)?SEL.delete(n):SEL.add(n);draw()});
@@ -1423,26 +1425,26 @@ def run_web_mode(host, port, no_browser, ns):
             return {"ok": True, "message": "ok", "state": state.snapshot()}
         if a == "refresh":
             d = state.refresh()
-            return {"ok": True, "message": f"刷新完成: {d.get('loaded', 0)} 条", "state": state.snapshot(), "data": d}
+            return {"ok": True, "message": f"[刷新账号列表] 完成，共加载 {d.get('loaded', 0)} 个账号", "state": state.snapshot(), "data": d}
         if a == "check_401":
             d = state.check401(names)
-            return {"ok": True, "message": f"401检测完成: 检测={d.get('checked', 0)} 无效={d.get('invalid_401', 0)}", "state": state.snapshot(), "data": d}
+            return {"ok": True, "message": f"[401 无效检测] 完成，共检测 {d.get('checked', 0)} 个账号，发现 {d.get('invalid_401', 0)} 个已失效（401）", "state": state.snapshot(), "data": d}
         if a == "check_quota":
             d = state.check_quota(names)
-            return {"ok": True, "message": f"额度检测完成: 检测={d.get('checked', 0)} 异常={d.get('invalid_quota', 0)}", "state": state.snapshot(), "data": d}
+            return {"ok": True, "message": f"[额度检测] 完成，共检测 {d.get('checked', 0)} 个账号，发现 {d.get('invalid_quota', 0)} 个额度耗尽", "state": state.snapshot(), "data": d}
         if a == "check_all":
             d = state.check_all(names)
-            return {"ok": True, "message": f"联合检测完成: 检测={d.get('checked', 0)} 401={d.get('invalid_401', 0)} 额度={d.get('invalid_quota', 0)}", "state": state.snapshot(), "data": d}
+            return {"ok": True, "message": f"[联合检测（401 + 额度）] 完成，共检测 {d.get('checked', 0)} 个账号，发现 {d.get('invalid_401', 0)} 个已失效（401）、{d.get('invalid_quota', 0)} 个额度耗尽", "state": state.snapshot(), "data": d}
         if a == "close":
-            d = state.close(names, track_progress=True); return {"ok": True, "message": f"关闭完成: 成功={d.get('success', 0)} 失败={d.get('failed', 0)}", "state": state.snapshot(), "data": d}
+            d = state.close(names, track_progress=True); return {"ok": True, "message": f"[关闭账号] 完成，共选中 {d.get('selected', len(names or []))} 个，成功关闭 {d.get('success', 0)} 个，失败 {d.get('failed', 0)} 个", "state": state.snapshot(), "data": d}
         if a == "recover_closed":
-            d = state.recover_closed_accounts(names); return {"ok": True, "message": f"恢复已关闭完成: 开启={d.get('enabled', 0)} 转备用={d.get('to_standby', 0)}", "state": state.snapshot(), "data": d}
+            d = state.recover_closed_accounts(names); return {"ok": True, "message": f"[恢复已关闭账号] 完成，成功开启 {d.get('enabled', 0)} 个，转入备用池 {d.get('to_standby', 0)} 个", "state": state.snapshot(), "data": d}
         if a == "add_standby":
-            d = state.add_standby(names); return {"ok": True, "message": f"已加入备用池: {d.get('added', 0)}", "state": state.snapshot(), "data": d}
+            d = state.add_standby(names); return {"ok": True, "message": f"[加入备用池] 完成，共选中 {d.get('selected', len(names or []))} 个，成功加入 {d.get('added', 0)} 个", "state": state.snapshot(), "data": d}
         if a == "remove_standby":
-            d = state.promote_standby(names); return {"ok": True, "message": f"备用转活跃完成: 开启={d.get('enabled', 0)} 401={d.get('moved_401', 0)} 已关闭={d.get('moved_closed', 0)}", "state": state.snapshot(), "data": d}
+            d = state.promote_standby(names); return {"ok": True, "message": f"[备用转活跃] 完成，成功开启 {d.get('enabled', 0)} 个，其中 {d.get('moved_401', 0)} 个检测为401已失效、{d.get('moved_closed', 0)} 个额度耗尽已关闭", "state": state.snapshot(), "data": d}
         if a == "delete":
-            d = state.delete(names); return {"ok": True, "message": f"删除完成: 成功={d.get('success', 0)} 失败={d.get('failed', 0)}", "state": state.snapshot(), "data": d}
+            d = state.delete(names); return {"ok": True, "message": f"[永久删除账号] 完成，共选中 {d.get('selected', len(names or []))} 个，成功删除 {d.get('success', 0)} 个，失败 {d.get('failed', 0)} 个", "state": state.snapshot(), "data": d}
         if a == "auto_start":
             d = state.auto_start(); return {"ok": True, "message": "自动巡检已启动" if d.get("started") else "自动巡检已在运行", "state": state.snapshot(), "data": d}
         if a == "auto_stop":

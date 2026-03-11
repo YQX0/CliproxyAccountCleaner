@@ -711,7 +711,7 @@ async def set_disabled_names(base_url, token, names, disabled, workers, timeout)
                 ) as resp:
                     text = await resp.text()
                     data = safe_json_text(text)
-                    ok = resp.status == 200 and data.get("status") == "ok"
+                    ok = 200 <= resp.status < 300
                     return {
                         "name": name,
                         "updated": ok,
@@ -758,7 +758,7 @@ async def delete_names(base_url, token, names, delete_workers, timeout):
                 async with session.delete(url, headers=mgmt_headers(token), timeout=timeout) as resp:
                     text = await resp.text()
                     data = safe_json_text(text)
-                    ok = resp.status == 200 and data.get("status") == "ok"
+                    ok = 200 <= resp.status < 300
                     return {"name": name, "deleted": ok, "status": resp.status, "error": None if ok else text[:200]}
         except Exception as e:
             return {"name": name, "deleted": False, "status": None, "error": str(e)}
