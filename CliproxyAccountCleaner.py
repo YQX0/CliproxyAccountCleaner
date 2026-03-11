@@ -790,7 +790,7 @@ class EnhancedUI(_TK_BASE):
         if tk is None:
             raise RuntimeError("当前环境缺少 tkinter，无法启动桌面模式。")
         super().__init__()
-        self.title("CliproxyAccountCleaner v1.3.3")
+        self.title("CliproxyAccountCleaner v1.4.0")
         self.geometry("1220x760")
         self.minsize(1080, 640)
 
@@ -1150,6 +1150,7 @@ class EnhancedUI(_TK_BASE):
         status_frame.grid(row=1, column=0, sticky="ew")
         status_frame.grid_propagate(False)
         status_frame.columnconfigure(0, weight=1)
+        status_frame.columnconfigure(1, weight=0)
 
         self.status_bar = tk.StringVar(value="准备就绪")
         self.status_label = tk.Label(
@@ -1161,6 +1162,15 @@ class EnhancedUI(_TK_BASE):
             fg="#0f172a",
         )
         self.status_label.grid(row=0, column=0, sticky="ew")
+        self.footer_brand_label = tk.Label(
+            status_frame,
+            text="HsMirageAI小站:ai.hsnb.fun",
+            anchor="e",
+            justify="right",
+            bg="#e2e8f0",
+            fg="#475569",
+        )
+        self.footer_brand_label.grid(row=0, column=1, sticky="e", padx=(8, 0))
         status_frame.bind("<Configure>", self._update_status_wrap)
 
         self.tree.bind("<Double-1>", self.toggle_item)
@@ -1497,6 +1507,7 @@ class EnhancedUI(_TK_BASE):
 
         try:
             files = fetch_auth_files(rt["base_url"], rt["token"], rt["timeout"])
+            self._refresh_standby_names_for_files(files)
             active_candidates = self._collect_primary_auto_candidates_from_files(files, rt)
             scan_summary = self._scan_for_recovery(rt, active_candidates, need_count=None)
             probe_by_identity = scan_summary.get("probe_by_name") or {}
@@ -1636,12 +1647,14 @@ class EnhancedUI(_TK_BASE):
             overflow_result = {"overflow_total": 0, "moved_to_standby": [], "move_errors": []}
             if self._current_active_count() > target_active:
                 files = fetch_auth_files(rt["base_url"], rt["token"], rt["timeout"])
+                self._refresh_standby_names_for_files(files)
                 primary_candidates = self._collect_primary_auto_candidates_from_files(files, rt)
                 overflow_result = self._move_active_overflow_to_standby(rt, primary_candidates, target_active)
             summary["moved_to_standby_count"] = len(overflow_result.get("moved_to_standby") or [])
             rebalance_errors.extend(overflow_result.get("move_errors") or [])
 
             files = fetch_auth_files(rt["base_url"], rt["token"], rt["timeout"])
+            self._refresh_standby_names_for_files(files)
             need_count = max(0, target_active - self._current_active_count())
 
             picked_names = []
@@ -1763,26 +1776,86 @@ class EnhancedUI(_TK_BASE):
         return self._resolve_output_path(self.conf.get("standby_output") or DEFAULT_STANDBY_OUTPUT)
 
     def _load_standby_names_from_file(self):
+        names = set()
+        for item in self._load_standby_entries_from_file():
+            name = self._standby_entry_name(item)
+            if name:
+                names.add(name)
+        return names
+
+    def _load_standby_entries_from_file(self):
         path = self._standby_output_path()
         if not path.exists():
             legacy = self.conf.get("standby_accounts") or []
             if isinstance(legacy, list):
-                return {str(name).strip() for name in legacy if str(name or "").strip()}
-            return set()
+                return list(legacy)
+            return []
         try:
             with path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
             if not isinstance(data, list):
-                return set()
-            return {str(name).strip() for name in data if str(name or "").strip()}
+                return []
+            return data
         except Exception:
+            return []
+
+    def _standby_entry_name(self, item):
+        if isinstance(item, dict):
+            name = str(item.get("name") or "").strip()
+            if name:
+                return name
+            raw = item.get("raw")
+            if isinstance(raw, dict):
+                raw_name = str(raw.get("name") or "").strip()
+                if raw_name:
+                    return raw_name
+            return ""
+        return str(item or "").strip()
+
+    def _standby_entry_keys(self, item):
+        values = []
+        if isinstance(item, dict):
+            for key in ("name", "account", "email", "auth_index", "authIndex"):
+                values.append(item.get(key))
+            raw = item.get("raw")
+            if isinstance(raw, dict):
+                for key in ("name", "account", "email", "auth_index", "authIndex"):
+                    values.append(raw.get(key))
+        else:
+            values.append(item)
+        return {str(value).strip() for value in values if str(value or "").strip()}
+
+    def _resolve_standby_names_for_files(self, files):
+        standby_entries = self._load_standby_entries_from_file()
+        if not standby_entries:
             return set()
+
+        standby_lookup = set()
+        for item in standby_entries:
+            standby_lookup.update(self._standby_entry_keys(item))
+        if not standby_lookup:
+            return set()
+
+        resolved = set()
+        for item in (files or []):
+            name = str((item or {}).get("name") or "").strip()
+            if not name:
+                continue
+            if self._standby_entry_keys(item) & standby_lookup:
+                resolved.add(name)
+        return resolved
+
+    def _refresh_standby_names_for_files(self, files):
+        self.standby_names = self._resolve_standby_names_for_files(files)
+        return self.standby_names
 
     def _save_standby_names_to_file(self):
         path = self._standby_output_path()
         path.parent.mkdir(parents=True, exist_ok=True)
+        cleaned = {str(name).strip() for name in (self.standby_names or set()) if str(name or "").strip()}
+        self.standby_names = cleaned
         with path.open("w", encoding="utf-8") as f:
-            json.dump(sorted(self.standby_names), f, ensure_ascii=False, indent=2)
+            json.dump(sorted(cleaned), f, ensure_ascii=False, indent=2)
 
     def _record_active_quota_snapshot(self, scan_type):
         out_path = self._resolve_output_path(self.conf.get("active_quota_output") or DEFAULT_ACTIVE_QUOTA_OUTPUT)
@@ -1849,6 +1922,7 @@ class EnhancedUI(_TK_BASE):
         def worker():
             try:
                 files = fetch_auth_files(rt["base_url"], rt["token"], rt["timeout"])
+                self._refresh_standby_names_for_files(files)
 
                 accounts = []
                 for f in files:
@@ -3270,6 +3344,7 @@ class EnhancedUI(_TK_BASE):
         for idx in range(reads):
             try:
                 files = fetch_auth_files(rt["base_url"], rt["token"], rt["timeout"])
+                self._refresh_standby_names_for_files(files)
                 active_candidates = self._collect_primary_auto_candidates_from_files(files, rt)
                 active_scan = self._scan_for_recovery(rt, active_candidates, need_count=None)
                 active_count = len(active_scan.get("recoverable") or [])
@@ -3330,6 +3405,7 @@ class EnhancedUI(_TK_BASE):
             summary = None
             try:
                 files = fetch_auth_files(rt["base_url"], rt["token"], rt["timeout"])
+                self._refresh_standby_names_for_files(files)
 
                 primary_candidates = self._collect_primary_auto_candidates_from_files(files, rt)
                 initial_active = len(primary_candidates)
@@ -3378,6 +3454,7 @@ class EnhancedUI(_TK_BASE):
                 unknown_standby_errors = list(unknown_standby_result.get("move_errors") or [])
 
                 replenish_files = fetch_auth_files(rt["base_url"], rt["token"], rt["timeout"])
+                self._refresh_standby_names_for_files(replenish_files)
                 active_after_scan = len(active_ok_names)
 
                 standby_candidates = self._collect_standby_candidates_from_files(replenish_files, rt)

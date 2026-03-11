@@ -247,7 +247,8 @@ class WebState:
         path = self.ns["Path"](p)
         if path.is_absolute():
             return path
-        return self.ns["Path"](self.ns["HERE"]) / p
+        base_dir = self.ns["Path"](self.config_path).resolve().parent if self.config_path else self.ns["Path"](self.ns["HERE"])
+        return base_dir / p
 
     def update_conf(self, data):
         if not isinstance(data, dict):
@@ -283,15 +284,103 @@ class WebState:
         return self._out_path(self.conf.get("standby_output") or self.ns["DEFAULT_STANDBY_OUTPUT"])
 
     def _load_standby(self):
-        p = self._standby_path()
-        try:
-            with open(p, "r", encoding="utf-8") as f:
-                self.standby = set(_names(json.load(f)))
-        except Exception:
-            self.standby = set()
+        with self.lock:
+            self._set_standby_locked(self._load_standby_names())
 
     def _save_standby(self):
-        self.ns["write_json_file"](self._standby_path(), sorted(self.standby))
+        with self.lock:
+            cleaned = self._set_standby_locked(self.standby)
+        self.ns["write_json_file"](self._standby_path(), sorted(cleaned))
+
+    def _load_standby_names(self):
+        names = set()
+        for item in self._load_standby_entries():
+            name = self._standby_entry_name(item)
+            if name:
+                names.add(name)
+        return names
+
+    def _load_standby_entries(self):
+        p = self._standby_path()
+        if not p.exists():
+            legacy = self.conf.get("standby_accounts") or []
+            if isinstance(legacy, list):
+                return list(legacy)
+            return []
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
+        return []
+
+    def _standby_entry_name(self, item):
+        if isinstance(item, dict):
+            name = str(item.get("name") or "").strip()
+            if name:
+                return name
+            raw = item.get("raw")
+            if isinstance(raw, dict):
+                raw_name = str(raw.get("name") or "").strip()
+                if raw_name:
+                    return raw_name
+            return ""
+        return str(item or "").strip()
+
+    def _standby_entry_keys(self, item):
+        values = []
+        if isinstance(item, dict):
+            for key in ("name", "account", "email", "auth_index", "authIndex"):
+                values.append(item.get(key))
+            raw = item.get("raw")
+            if isinstance(raw, dict):
+                for key in ("name", "account", "email", "auth_index", "authIndex"):
+                    values.append(raw.get(key))
+        else:
+            values.append(item)
+        return {str(value).strip() for value in values if str(value or "").strip()}
+
+    def _resolve_standby_names_for_files(self, files):
+        standby_entries = self._load_standby_entries()
+        if not standby_entries:
+            return set()
+
+        standby_lookup = set()
+        for item in standby_entries:
+            standby_lookup.update(self._standby_entry_keys(item))
+        if not standby_lookup:
+            return set()
+
+        resolved = set()
+        for item in (files or []):
+            name = str((item or {}).get("name") or "").strip()
+            if not name:
+                continue
+            if self._standby_entry_keys(item) & standby_lookup:
+                resolved.add(name)
+        return resolved
+
+    def _set_standby_locked(self, names):
+        cleaned = {str(name).strip() for name in (names or set()) if str(name or "").strip()}
+        self.standby = cleaned
+        for row in self.rows:
+            row["standby"] = str(row.get("name") or "").strip() in cleaned
+        return cleaned
+
+    def _refresh_standby_for_files_locked(self, files):
+        return self._set_standby_locked(self._resolve_standby_names_for_files(files))
+
+    def _refresh_standby_from_rows_locked(self):
+        files = []
+        for row in self.rows:
+            raw = row.get("raw")
+            if isinstance(raw, dict):
+                files.append(raw)
+        if files:
+            return self._refresh_standby_for_files_locked(files)
+        return self._set_standby_locked(self._load_standby_names())
 
     def _bucket(self, a):
         if a.get("invalid_401"):
@@ -345,6 +434,7 @@ class WebState:
         files = self.ns["fetch_auth_files"](rt["base"], rt["token"], rt["timeout"])
         with self.lock:
             old = {x.get("name"): x for x in self.rows if x.get("name")}
+            self._refresh_standby_for_files_locked(files)
             out = []
             for raw in files:
                 n = str(raw.get("name") or "").strip()
@@ -361,6 +451,7 @@ class WebState:
         rt = self._runtime(False)
         out = []
         with self.lock:
+            self._refresh_standby_from_rows_locked()
             for a in self.rows:
                 if wanted and a.get("name") not in wanted:
                     continue
@@ -726,6 +817,8 @@ class WebState:
         ret = asyncio.run(self.ns["enable_names"](rt["base"], rt["token"], n, rt["enable_workers"], rt["timeout"]))
         ok = {x.get("name") for x in ret if x.get("updated")}
         with self.lock:
+            if drop_standby:
+                self._refresh_standby_from_rows_locked()
             for a in self.rows:
                 if a.get("name") in ok:
                     a["disabled"] = False
@@ -746,6 +839,7 @@ class WebState:
         n = _names(names)
         add = 0
         with self.lock:
+            self._refresh_standby_from_rows_locked()
             for x in n:
                 if x not in self.standby:
                     self.standby.add(x)
@@ -760,6 +854,7 @@ class WebState:
         n = _names(names)
         rm = 0
         with self.lock:
+            self._refresh_standby_from_rows_locked()
             for x in n:
                 if x in self.standby:
                     self.standby.remove(x)
@@ -776,6 +871,8 @@ class WebState:
 
         rt = self._runtime(True)
         files = self.ns["fetch_auth_files"](rt["base"], rt["token"], rt["timeout"])
+        with self.lock:
+            self._refresh_standby_for_files_locked(files)
         candidates = self._collect_standby_candidates(files, rt)
         selected_set = set(selected)
         candidates = [x for x in candidates if str(x.get("name") or "").strip() in selected_set]
@@ -843,6 +940,8 @@ class WebState:
         rt = self._runtime(True)
         selected = set(_names(names))
         files = self.ns["fetch_auth_files"](rt["base"], rt["token"], rt["timeout"])
+        with self.lock:
+            self._refresh_standby_for_files_locked(files)
         closed = self._collect_closed_candidates(files, rt)
         if selected:
             closed = [x for x in closed if str(x.get("name") or "").strip() in selected]
@@ -891,6 +990,7 @@ class WebState:
         ret = asyncio.run(self.ns["delete_names"](rt["base"], rt["token"], n, rt["delete_workers"], rt["timeout"]))
         ok = {x.get("name") for x in ret if x.get("deleted")}
         with self.lock:
+            self._refresh_standby_from_rows_locked()
             self.rows = [x for x in self.rows if x.get("name") not in ok]
             self.standby = {x for x in self.standby if x not in ok}
         self._save_standby()
@@ -945,6 +1045,8 @@ class WebState:
             refill_need = max(0, target - active_after_overflow)
             if refill_need > 0:
                 files = self.ns["fetch_auth_files"](rt["base"], rt["token"], rt["timeout"])
+                with self.lock:
+                    self._refresh_standby_for_files_locked(files)
 
                 standby_candidates = self._collect_standby_candidates(files, rt)
                 standby_scan = self._scan_for_recovery(rt, standby_candidates, need_count=refill_need)
@@ -1191,7 +1293,7 @@ class AuthManager:
 WEB_PAGE = r"""<!doctype html>
 <html lang="zh-CN"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CliproxyAccountCleaner v1.3.3</title>
+<title>CliproxyAccountCleaner v1.4.0</title>
 <style>
 :root{--bg:#fff4f9;--panel:#fffafc;--line:#efbfd3;--line2:#f6d7e5;--btn:#ff78ac;--btn2:#ff5a98;--text:#5a3146;--thead:#ffe7f2}
 *{box-sizing:border-box}html,body{height:100%}body{margin:0;background:radial-gradient(circle at 10% -10%,#ffe8f2 0,#fff4f9 40%,#ffeef6 100%);color:var(--text);font-family:"Microsoft YaHei","Segoe UI",Tahoma,sans-serif;font-size:14px}
@@ -1257,7 +1359,7 @@ tbody td{border-bottom:1px solid #f8ddeb;padding:7px 6px;overflow:hidden;text-ov
 <div class="ops"><button class="btn" id="btnSelectAll">全选</button><button class="btn" id="btnSelectNone">取消全选</button><button class="btn" id="btnCheck401">检测401无效</button><button class="btn" id="btnCheckQuota">检测额度</button><button class="btn" id="btnCheckAll">检测（401+额度）</button><button class="btn" id="btnClose">关闭选中账号</button><button class="btn" id="btnRecover">恢复已关闭</button><button class="btn" id="btnAddStandby">加入备用池</button><button class="btn" id="btnRemoveStandby">备用转活跃</button><button class="btn danger" id="btnDelete">永久删除</button></div>
 <div class="note" id="actionLine">就绪</div></div>
 <div class="table-wrap"><div class="scroll"><table><thead><tr><th style="width:42px">#</th><th style="width:310px">账号 / 邮箱</th><th style="width:120px">状态</th><th>额度详情</th><th style="width:290px">错误信息</th></tr></thead><tbody id="rowsBody"></tbody></table></div></div>
-<div class="statusbar"><div id="footLeft">显示 0 / 0 个账号</div><div>CliproxyAccountCleaner Web</div></div></div>
+<div class="statusbar"><div id="footLeft">显示 0 / 0 个账号</div><div>HsMirageAI小站:ai.hsnb.fun</div></div></div>
 <div class="modal-mask" id="helpMask"><div class="modal"><h3>使用说明</h3><pre>1. 填写 base_url 和 token，然后点击“刷新账号列表”。
 2. 双击表格行可勾选/取消；也可以用全选按钮。
 3. 检测类按钮支持 401、额度、联合检测。
@@ -1288,7 +1390,8 @@ function stopCloseProgressPoll(){if(CLOSE_PROGRESS_TIMER){clearInterval(CLOSE_PR
 async function pollCloseProgressOnce(){const d=await j("/api/progress");const p=d.progress||{};if((p.op||"")!=="close"){return}const total=Number(p.total||0);const done=Number(p.done||0);const success=Number(p.success||0);const failed=Number(p.failed||0);const pct=total>0?Math.floor((done*100)/total):0;document.getElementById("actionLine").textContent=`关闭进度: ${done}/${total} (${pct}%) 成功=${success} 失败=${failed}`;if(!p.running){stopCloseProgressPoll()}}
 async function startCloseProgressPoll(){stopCloseProgressPoll();await pollCloseProgressOnce();CLOSE_PROGRESS_TIMER=setInterval(async()=>{try{await pollCloseProgressOnce()}catch(e){if(e.code===401){showLogin(e.message)}stopCloseProgressPoll()}},700)}
 const ACTION_LABELS={"refresh":"正在刷新账号列表","check_401":"正在执行 401 无效检测","check_quota":"正在执行额度检测","check_all":"正在执行联合检测（401 + 额度）","close":"正在关闭选中账号","recover_closed":"正在恢复已关闭账号","add_standby":"正在将选中账号加入备用池","remove_standby":"正在将备用账号转为活跃","delete":"正在永久删除选中账号","auto_start":"正在启动自动巡检","auto_stop":"正在停止自动巡检"};
-async function run(a,needSel=false,ask=""){const hint=ACTION_LABELS[a]||"执行中";try{let names=[];if(["check_401","check_quota","check_all"].includes(a)){names=detectNames()}else if(needSel){names=Array.from(SEL);if(!names.length){alert("请先勾选账号");return}}if(ask&&!window.confirm(ask))return;const cnt=names.length?` (${names.length} 个账号)`:"";document.getElementById("actionLine").textContent=hint+cnt+"，请稍候...";if(a==="close"){await startCloseProgressPoll()}const d=await j("/api/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:a,config:rcfg(),selected_names:names})});if(d.state)sync(d.state);stopCloseProgressPoll();document.getElementById("actionLine").textContent=d.message||(hint.replace("正在","")+" 完成")}catch(e){stopCloseProgressPoll();if(e.code===401){showLogin(e.message);return}document.getElementById("actionLine").textContent=hint.replace("正在","")+" 失败: "+e.message}}
+async function run(a,needSel=false,ask=""){const hint=ACTION_LABELS[a]||"执行中";try{let names=[];if(["check_401","check_quota","check_all"].includes(a)){names=detectNames()}else if(needSel){names=Array.from(SEL);if(!names.length){alert("请先勾选账号");return}}if(ask&&!window.confirm(ask))return;const cnt=names.length?` (${names.length} 个账号)`:"";
+document.getElementById("actionLine").textContent=hint+cnt+"，请稍候...";if(a==="close"){await startCloseProgressPoll()}const d=await j("/api/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:a,config:rcfg(),selected_names:names})});if(d.state)sync(d.state);stopCloseProgressPoll();document.getElementById("actionLine").textContent=d.message||(hint.replace("正在","")+" 完成")}catch(e){stopCloseProgressPoll();if(e.code===401){showLogin(e.message);return}document.getElementById("actionLine").textContent=hint.replace("正在","")+" 失败: "+e.message}}
 document.getElementById("keyword").addEventListener("input",draw);document.getElementById("statusFilter").addEventListener("change",draw);
 document.getElementById("rowsBody").addEventListener("change",e=>{const n=e.target&&e.target.dataset&&e.target.dataset.name;if(!n)return;e.target.checked?SEL.add(n):SEL.delete(n);draw()});
 document.getElementById("rowsBody").addEventListener("dblclick",e=>{const tr=e.target.closest("tr[data-name]");if(!tr)return;const n=tr.dataset.name;SEL.has(n)?SEL.delete(n):SEL.add(n);draw()});
@@ -1334,26 +1437,19 @@ def run_web_mode(host, port, no_browser, ns):
             d = state.check_all(names)
             return {"ok": True, "message": f"[联合检测（401 + 额度）] 完成，共检测 {d.get('checked', 0)} 个账号，发现 {d.get('invalid_401', 0)} 个已失效（401）、{d.get('invalid_quota', 0)} 个额度耗尽", "state": state.snapshot(), "data": d}
         if a == "close":
-            d = state.close(names, track_progress=True)
-            return {"ok": True, "message": f"[关闭账号] 完成，共选中 {d.get('selected', len(names or []))} 个，成功关闭 {d.get('success', 0)} 个，失败 {d.get('failed', 0)} 个", "state": state.snapshot(), "data": d}
+            d = state.close(names, track_progress=True); return {"ok": True, "message": f"[关闭账号] 完成，共选中 {d.get('selected', len(names or []))} 个，成功关闭 {d.get('success', 0)} 个，失败 {d.get('failed', 0)} 个", "state": state.snapshot(), "data": d}
         if a == "recover_closed":
-            d = state.recover_closed_accounts(names)
-            return {"ok": True, "message": f"[恢复已关闭账号] 完成，成功开启 {d.get('enabled', 0)} 个，转入备用池 {d.get('to_standby', 0)} 个", "state": state.snapshot(), "data": d}
+            d = state.recover_closed_accounts(names); return {"ok": True, "message": f"[恢复已关闭账号] 完成，成功开启 {d.get('enabled', 0)} 个，转入备用池 {d.get('to_standby', 0)} 个", "state": state.snapshot(), "data": d}
         if a == "add_standby":
-            d = state.add_standby(names)
-            return {"ok": True, "message": f"[加入备用池] 完成，共选中 {d.get('selected', len(names or []))} 个，成功加入 {d.get('added', 0)} 个", "state": state.snapshot(), "data": d}
+            d = state.add_standby(names); return {"ok": True, "message": f"[加入备用池] 完成，共选中 {d.get('selected', len(names or []))} 个，成功加入 {d.get('added', 0)} 个", "state": state.snapshot(), "data": d}
         if a == "remove_standby":
-            d = state.promote_standby(names)
-            return {"ok": True, "message": f"[备用转活跃] 完成，成功开启 {d.get('enabled', 0)} 个，其中 {d.get('moved_401', 0)} 个检测为401已失效、{d.get('moved_closed', 0)} 个额度耗尽已关闭", "state": state.snapshot(), "data": d}
+            d = state.promote_standby(names); return {"ok": True, "message": f"[备用转活跃] 完成，成功开启 {d.get('enabled', 0)} 个，其中 {d.get('moved_401', 0)} 个检测为401已失效、{d.get('moved_closed', 0)} 个额度耗尽已关闭", "state": state.snapshot(), "data": d}
         if a == "delete":
-            d = state.delete(names)
-            return {"ok": True, "message": f"[永久删除账号] 完成，共选中 {d.get('selected', len(names or []))} 个，成功删除 {d.get('success', 0)} 个，失败 {d.get('failed', 0)} 个", "state": state.snapshot(), "data": d}
+            d = state.delete(names); return {"ok": True, "message": f"[永久删除账号] 完成，共选中 {d.get('selected', len(names or []))} 个，成功删除 {d.get('success', 0)} 个，失败 {d.get('failed', 0)} 个", "state": state.snapshot(), "data": d}
         if a == "auto_start":
-            d = state.auto_start()
-            return {"ok": True, "message": "[自动巡检] 已启动，将立即执行首次巡检" if d.get("started") else "[自动巡检] 已在运行中，无需重复启动", "state": state.snapshot(), "data": d}
+            d = state.auto_start(); return {"ok": True, "message": "自动巡检已启动" if d.get("started") else "自动巡检已在运行", "state": state.snapshot(), "data": d}
         if a == "auto_stop":
-            d = state.auto_stop_now()
-            return {"ok": True, "message": "[自动巡检] 已停止，后台巡检线程将在当前周期结束后退出", "state": state.snapshot(), "data": d}
+            d = state.auto_stop_now(); return {"ok": True, "message": "自动巡检已停止", "state": state.snapshot(), "data": d}
         if a == "auto_status":
             return {"ok": True, "message": "ok", "state": state.snapshot()}
         raise RuntimeError(f"unsupported action: {a}")

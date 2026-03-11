@@ -284,22 +284,93 @@ def load_config():
     return DEFAULT_CONFIG
 
 
-def load_standby_names(config):
-    path = os.path.join(HERE, config.get("standby_output") or DEFAULT_CONFIG["standby_output"])
+def standby_output_path(config):
+    path = str(config.get("standby_output") or DEFAULT_CONFIG["standby_output"] or "").strip()
+    if not path:
+        path = DEFAULT_CONFIG["standby_output"]
+    if os.path.isabs(path):
+        return path
+    return os.path.join(HERE, path)
+
+
+def load_standby_entries(config):
+    path = standby_output_path(config)
     if not os.path.exists(path):
-        return set()
+        legacy = config.get("standby_accounts") or []
+        if isinstance(legacy, list):
+            return list(legacy)
+        return []
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, list):
-            return {str(item).strip() for item in data if str(item).strip()}
+            return data
     except Exception:
         pass
-    return set()
+    return []
+
+
+def standby_entry_name(item):
+    if isinstance(item, dict):
+        name = str(item.get("name") or "").strip()
+        if name:
+            return name
+        raw = item.get("raw")
+        if isinstance(raw, dict):
+            raw_name = str(raw.get("name") or "").strip()
+            if raw_name:
+                return raw_name
+        return ""
+    return str(item or "").strip()
+
+
+def standby_entry_keys(item):
+    values = []
+    if isinstance(item, dict):
+        for key in ("name", "account", "email", "auth_index", "authIndex"):
+            values.append(item.get(key))
+        raw = item.get("raw")
+        if isinstance(raw, dict):
+            for key in ("name", "account", "email", "auth_index", "authIndex"):
+                values.append(raw.get(key))
+    else:
+        values.append(item)
+    return {str(value).strip() for value in values if str(value or "").strip()}
+
+
+def resolve_standby_names_for_files(config, auth_files):
+    standby_entries = load_standby_entries(config)
+    if not standby_entries:
+        return set()
+
+    standby_lookup = set()
+    for item in standby_entries:
+        standby_lookup.update(standby_entry_keys(item))
+    if not standby_lookup:
+        return set()
+
+    resolved = set()
+    for item in (auth_files or []):
+        name = str((item or {}).get("name") or "").strip()
+        if not name:
+            continue
+        if standby_entry_keys(item) & standby_lookup:
+            resolved.add(name)
+    return resolved
+
+
+def load_standby_names(config):
+    names = set()
+    for item in load_standby_entries(config):
+        name = standby_entry_name(item)
+        if name:
+            names.add(name)
+    return names
 
 
 def save_standby_names(config, standby_names):
-    path = os.path.join(HERE, config.get("standby_output") or DEFAULT_CONFIG["standby_output"])
+    path = standby_output_path(config)
+    os.makedirs(os.path.dirname(path) or HERE, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(sorted({str(item).strip() for item in (standby_names or set()) if str(item).strip()}), f, ensure_ascii=False, indent=2)
 
@@ -973,11 +1044,10 @@ async def run_auto_check_once(config):
     primary_quota_threshold = config["primary_quota_threshold"]
     auto_action_401 = config.get("auto_action_401") or "删除"
     auto_action_quota = config.get("auto_action_quota") or "关闭"
-    standby_names = load_standby_names(config)
-
     auth_files = await fetch_auth_files(base_url, token, timeout)
     if not auth_files:
         raise RuntimeError("自动巡检未获取到账号列表")
+    standby_names = resolve_standby_names_for_files(config, auth_files)
 
     invalid_401 = await check_401_batch(base_url, token, auth_files, workers, timeout, target_type)
     invalid_quota = await check_quota_batch(
@@ -1011,6 +1081,7 @@ async def run_auto_check_once(config):
         closed_count += sum(1 for item in close_results if item.get("success"))
 
     auth_files_after = await fetch_auth_files(base_url, token, timeout)
+    standby_names = resolve_standby_names_for_files(config, auth_files_after)
     rebalance_summary = await rebalance_active_accounts(
         config,
         standby_names,
