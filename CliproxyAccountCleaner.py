@@ -750,21 +750,47 @@ async def enable_names(base_url, token, names, enable_workers, timeout):
 
 
 async def delete_names(base_url, token, names, delete_workers, timeout):
+    # 删除操作的超时适当放宽，避免因网络波动误报失败
+    delete_timeout = max(timeout, 10) * 3
+
+    async def _name_still_exists(session, name):
+        """删除超时/异常后，回查该账号是否仍然存在"""
+        try:
+            encoded = urllib.parse.quote(name, safe="")
+            check_url = f"{base_url}/v0/management/auth-files?name={encoded}"
+            async with session.get(check_url, headers=mgmt_headers(token), timeout=timeout) as resp:
+                if resp.status == 404:
+                    return False  # 不存在了，说明删除成功
+                if resp.status == 200:
+                    data = safe_json_text(await resp.text())
+                    # 如果返回空列表或无数据，说明已不存在
+                    if isinstance(data, list) and len(data) == 0:
+                        return False
+                    if isinstance(data, dict) and not data.get("name"):
+                        return False
+                return True  # 仍然存在
+        except Exception:
+            return True  # 查询也失败了，保守地认为仍存在
+
     async def delete_one(session, sem, name):
         encoded = urllib.parse.quote(name, safe="")
         url = f"{base_url}/v0/management/auth-files?name={encoded}"
         try:
             async with sem:
-                async with session.delete(url, headers=mgmt_headers(token), timeout=timeout) as resp:
+                async with session.delete(url, headers=mgmt_headers(token), timeout=delete_timeout) as resp:
                     text = await resp.text()
                     data = safe_json_text(text)
                     ok = (200 <= resp.status < 300) or (resp.status == 200 and data.get("status") == "ok")
                     return {"name": name, "deleted": ok, "status": resp.status, "error": None if ok else text[:200]}
         except Exception as e:
+            # 请求超时或异常，但 CPA 可能已经完成了删除，回查确认
+            still_exists = await _name_still_exists(session, name)
+            if not still_exists:
+                return {"name": name, "deleted": True, "status": None, "error": None}
             return {"name": name, "deleted": False, "status": None, "error": str(e)}
 
     connector = aiohttp.TCPConnector(limit=max(1, delete_workers), limit_per_host=max(1, delete_workers))
-    client_timeout = aiohttp.ClientTimeout(total=max(1, timeout))
+    client_timeout = aiohttp.ClientTimeout(total=max(1, delete_timeout))
     sem = asyncio.Semaphore(max(1, delete_workers))
 
     async with aiohttp.ClientSession(connector=connector, timeout=client_timeout, trust_env=True) as session:
